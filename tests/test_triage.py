@@ -26,6 +26,19 @@ SAMPLE_EVENT = {
 
 UNKNOWN_PIPELINE_EVENT = {**SAMPLE_EVENT, "pipeline_id": "pl_unknown_pipeline"}
 
+# SAMPLE_EVENT is a documented transient fault, which the deterministic policy
+# tier now settles without an LLM call. These tests exercise the tier-2 path, so
+# they need an event that policy genuinely abstains on: an unrecognised error
+# class with retry budget still remaining.
+AMBIGUOUS_EVENT = {
+    **SAMPLE_EVENT,
+    "event_id": "evt_002",
+    "error_code": "PARTIAL_LOAD",
+    "error_message": "Load completed with fewer records than expected",
+    "rows_processed": 31200,
+    "retry_count": 1,
+}
+
 
 # -- Health
 
@@ -123,18 +136,40 @@ def test_parse_unknown_action_defaults_to_escalate():
 
 # -- Context injection end-to-end (mocking httpx)
 
-def _make_httpx_mock(action: str = "retry", reasoning: str = "transient timeout"):
+def _make_httpx_mock(action: str = "retry", reasoning: str = "transient timeout", confidence: str = "high"):
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
     mock_resp.json.return_value = {
-        "choices": [{"message": {"content": f'{{"action": "{action}", "reasoning": "{reasoning}"}}'}}]
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        f'{{"action": "{action}", "confidence": "{confidence}", '
+                        f'"reasoning": "{reasoning}"}}'
+                    )
+                }
+            }
+        ],
+        "usage": {"prompt_tokens": 900, "completion_tokens": 60},
     }
     return mock_resp
 
 
+def test_known_transient_decided_without_llm():
+    """The deterministic tier must settle documented failures at zero token cost."""
+    with patch("app.triage.httpx.post") as mock_post:
+        resp = client.post("/triage", json=SAMPLE_EVENT)
+
+    mock_post.assert_not_called()
+    body = resp.json()
+    assert body["action"] == "retry"
+    assert body["decided_by"] == "policy"
+    assert body["cost"]["llm_calls"] == 0
+
+
 def test_llm_receives_catalog_context():
     with patch("app.triage.httpx.post", return_value=_make_httpx_mock()) as mock_post:
-        resp = client.post("/triage", json=SAMPLE_EVENT)
+        resp = client.post("/triage", json=AMBIGUOUS_EVENT)
 
     assert resp.status_code == 200
     prompt = mock_post.call_args[1]["json"]["messages"][0]["content"]
@@ -144,7 +179,7 @@ def test_llm_receives_catalog_context():
 
 def test_llm_receives_run_history():
     with patch("app.triage.httpx.post", return_value=_make_httpx_mock()) as mock_post:
-        client.post("/triage", json=SAMPLE_EVENT)
+        client.post("/triage", json=AMBIGUOUS_EVENT)
 
     prompt = mock_post.call_args[1]["json"]["messages"][0]["content"]
     assert "Run History" in prompt
@@ -152,7 +187,30 @@ def test_llm_receives_run_history():
 
 def test_endpoint_returns_action_from_llm():
     with patch("app.triage.httpx.post", return_value=_make_httpx_mock("escalate", "SLA at risk")):
-        resp = client.post("/triage", json=SAMPLE_EVENT)
+        resp = client.post("/triage", json=AMBIGUOUS_EVENT)
 
     assert resp.json()["action"] == "escalate"
     assert "SLA" in resp.json()["reasoning"]
+
+
+def test_truncated_response_escalates_instead_of_guessing():
+    """A reply cut off mid-JSON must not be keyword-matched into a decision."""
+    truncated = MagicMock()
+    truncated.raise_for_status = MagicMock()
+    truncated.json.return_value = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {"content": '{"action": "retry", "confid'},
+            }
+        ],
+        "usage": {"prompt_tokens": 1400, "completion_tokens": 0, "total_tokens": 2900},
+    }
+
+    with patch("app.triage.httpx.post", return_value=truncated):
+        resp = client.post("/triage", json=AMBIGUOUS_EVENT)
+
+    body = resp.json()
+    assert body["action"] == "escalate"
+    assert body["decided_by"] == "error"
+    assert body["requires_human"] is True
