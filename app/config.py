@@ -35,10 +35,13 @@ class Settings:
     llm_model: str = os.environ.get("LLM_MODEL", "gemini-3.5-flash")
     llm_timeout_seconds: float = _env_float("LLM_TIMEOUT_SECONDS", 30.0)
 
-    # Per-million-token prices used for budget accounting. Defaults track
-    # gemini-2.0-flash; override per provider so the budget guard stays honest.
-    price_per_1m_input: float = _env_float("LLM_PRICE_PER_1M_INPUT", 0.10)
-    price_per_1m_output: float = _env_float("LLM_PRICE_PER_1M_OUTPUT", 0.40)
+    # Per-million-token prices used for budget accounting. Verified against
+    # ai.google.dev/gemini-api/docs/pricing for gemini-3.5-flash, standard tier,
+    # 2026-08-07. Google prices output "including thinking tokens", which is why
+    # usage_from_body reconciles hidden reasoning tokens into the output count.
+    # Override per provider or the ledger is fiction.
+    price_per_1m_input: float = _env_float("LLM_PRICE_PER_1M_INPUT", 1.50)
+    price_per_1m_output: float = _env_float("LLM_PRICE_PER_1M_OUTPUT", 9.00)
 
     daily_budget_usd: float = _env_float("DAILY_BUDGET_USD", 3.00)
 

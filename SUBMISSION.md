@@ -80,7 +80,9 @@ The resolution path currently builds its final safety signals from a minimal con
 
 The budget ledger is local to one process, which is correct for this proof of concept but not for horizontally scaled deployment. The policy overlay also lives in code because the supplied catalog expresses important constraints as free-text notes. In production, those constraints should be structured catalog fields rather than code constants.
 
-The service does not yet persist decisions, retry transient model failures, or notify a real escalation channel. The model pricing assumptions have not been independently verified, and the evaluation runs each scenario once despite observed model variability. These are known limitations, not behavior I would present as production-ready.
+The service does not yet persist decisions, retry transient model failures, or notify a real escalation channel. The evaluation also runs each scenario once despite observed model variability. These are known limitations, not behavior I would present as production-ready.
+
+The evaluation harness itself needed a correction worth recording. Restoring DAG source between runs caused Airflow to deactivate the DAGs, so every trigger failed and the suite still reported a pass against a fleet that had never been reset. A partially failed reset is worse than none, because it produces a confident green result on the wrong state. The reset now re-serializes the DAGs and aborts on any failed trigger. I would apply the same rule anywhere an evaluation depends on external setup: if the fixture cannot be established, the run must fail rather than proceed.
 
 **What would you add before shipping this to a real client?**
 
@@ -92,11 +94,15 @@ I would then replace the local budget ledger with a shared store, add per-pipeli
 
 **How did you think about the $3/day cost constraint?**
 
-I treated the budget as a routing problem rather than a model-selection problem. The biggest cost reduction comes from keeping routine, well-understood events out of the model entirely. In the fleet evaluation, five of six triage scenarios required no model call. The live triage sweep cost approximately $0.0008, which projects to roughly $0.006 per day at 15 pipelines running three times each.
+I treated the budget as a routing problem rather than a model-selection problem. The biggest cost reduction comes from keeping routine, well-understood events out of the model entirely. In the fleet evaluation, five of six triage scenarios required no model call at all, so their marginal cost is zero.
 
-Live resolution costs more because it is a multi-step investigation, averaging about $0.0022 per case. That is acceptable because it should be invoked only for an incident that warrants deeper investigation.
+The remaining figures are measured against verified `gemini-3.5-flash` pricing of $1.50 per million input tokens and $9.00 per million output tokens. An event that reaches the model costs about $0.014, which projects to roughly $0.11 per day across 15 pipelines running three times each, or about 3.5% of the ceiling. Sending every event to the model instead would cost about $0.63 per day, so the deterministic layer is worth roughly a factor of six here, and considerably more as the fleet grows.
 
-The key implementation lesson was validating provider usage rather than trusting an individual usage field. I reconcile completion usage with total reported usage so reasoning tokens are not missed. If the budget became tighter, I would first expand deterministic coverage, then reduce prompt size, use a lower-cost model, cache repeated failure signatures, and batch non-urgent events. With more budget, I would invest it in better investigation and verification, not in sending routine triage work to a larger model.
+Live resolution is the expensive path at about $0.038 per investigation, because it is a multi-step loop that reads logs and source. After triage, the remaining budget supports roughly 75 investigations per day. For a fleet producing around 45 runs daily that is adequate but not generous, and it is the number I would monitor first. It is also the reason the step cap and the log condensation matter: both directly control the dominant cost.
+
+The key implementation lesson was validating provider usage rather than trusting an individual usage field. Google prices output "including thinking tokens", but the API reported completion tokens as zero while total usage showed roughly 100 tokens for a trivial call. Reconciling completion usage against the reported total corrected an understatement of more than an order of magnitude. Before that fix the budget guard would have permitted effectively unlimited spend.
+
+If the budget became tighter, I would first expand deterministic coverage, then reduce prompt size, then move to a cheaper model. On measured token volumes, `gemini-3.5-flash-lite` would reduce resolution to roughly $0.011 per investigation and raise the daily capacity to about 270. With more budget, I would invest it in better investigation and verification, not in sending routine triage work to a larger model.
 
 ## 5. Evaluation
 
@@ -121,7 +127,7 @@ The evaluation measures more than whether the final action looks reasonable. It 
 
 The default evaluation uses a stubbed model so it can run offline without spend. A live mode exercises the ambiguous triage path, and a separate live-resolution mode runs against Airflow after resetting the fleet state. The unit suite also covers the policy rules, safety gate, write protection, log condensation, step limits, response truncation, and pipeline-type extensibility.
 
-On a reset fleet, triage resolved all six scenarios with no harmful or miscalibrated decisions, and five needed no model call. Live resolution also resolved all six scenarios within the allowed outcomes at a total cost of $0.01342.
+On a reset fleet, triage resolved all six scenarios with no harmful or miscalibrated decisions, and five needed no model call. Live resolution also resolved all six scenarios within the allowed outcomes, at a total cost of $0.229 for the six investigations.
 
 **What does your eval miss?**
 

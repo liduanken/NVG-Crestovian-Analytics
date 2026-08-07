@@ -41,14 +41,31 @@ echo "==> Reverting any agent edits to DAG source"
 (cd "$COMPOSE_DIR/.." && git checkout -- airflow/dags/ 2>/dev/null) \
     && echo "    airflow/dags/ restored" || echo "    (no DAG changes to revert)"
 
+# Rewriting the DAG files makes the scheduler mark them inactive, and it does not
+# recover on its own within the eval's timeframe. Without this the fleet looks
+# empty and every trigger 404s.
+echo "==> Re-serializing DAGs"
+(cd "$COMPOSE_DIR" && docker compose exec -T airflow-scheduler airflow dags reserialize) > /dev/null 2>&1 \
+    && echo "    DAGs serialized" || { echo "    ERROR: reserialize failed"; exit 1; }
+sleep 5
+
 echo "==> Triggering a fresh failing run per pipeline"
+failed=0
 for dag in $DAGS; do
     run_id=$(curl -sf -u "$AUTH" -X POST "${AIRFLOW_URL}/api/v1/dags/${dag}/dagRuns" \
         -H "Content-Type: application/json" -d '{"conf":{"source":"eval_reset"}}' \
         | python3 -c "import sys,json;print(json.load(sys.stdin).get('dag_run_id',''))" 2>/dev/null)
     printf "    %-22s %s\n" "$dag" "${run_id:-FAILED}"
+    [ -z "$run_id" ] && failed=1
     sleep 2
 done
+
+# A partial reset produces a green eval against a fleet that was never restored,
+# which is worse than no reset at all. Fail loudly instead.
+if [ "$failed" -eq 1 ]; then
+    echo "ERROR: one or more DAGs could not be triggered. Results would be invalid."
+    exit 1
+fi
 
 echo "==> Waiting for the scheduler to land the runs"
 sleep 45
