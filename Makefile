@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help setup airflow-up airflow-down airflow-bootstrap run test curl-triage curl-resolve
+.PHONY: help setup airflow-up airflow-down airflow-bootstrap run test eval eval-live curl-triage curl-resolve
 
 help:
 	@echo ""
@@ -10,6 +10,8 @@ help:
 	@echo "  airflow-down      Stop the Airflow stack"
 	@echo "  run               Start the FastAPI server with live reload"
 	@echo "  test              Run the test suite"
+	@echo "  eval              Run the eval offline (no LLM spend)"
+	@echo "  eval-live         Run the eval against the real LLM and Airflow"
 	@echo "  curl-triage       Send a sample event to POST /triage"
 	@echo "  curl-resolve      Send a sample task to POST /resolve"
 	@echo ""
@@ -40,6 +42,14 @@ run:
 
 test:
 	uv run pytest -v
+
+# ── Eval ──────────────────────────────────────────────────────────────────────
+
+eval:
+	uv run python -m evals.run_eval
+
+eval-live:
+	uv run python -m evals.run_eval --live --resolve --reset
 
 # ── Manual probes ─────────────────────────────────────────────────────────────
 
