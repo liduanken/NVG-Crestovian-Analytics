@@ -100,6 +100,21 @@ The key implementation lesson was validating provider usage rather than trusting
 
 ## 5. Evaluation
 
+**Where it lives and how to run it**
+
+    make eval        # offline, stubbed model, no spend
+    make eval-live   # resets the fleet, then runs live LLM triage and /resolve
+    make test        # unit suite
+
+| File | Purpose |
+| --- | --- |
+| `evals/scenarios.py` | The six scenarios and their permitted/forbidden outcomes |
+| `evals/run_eval.py` | Harness and scoring |
+| `evals/reset_fleet.sh` | Restores seeded failure state between live runs |
+
+`make eval-live` requires the Airflow stack to be running and `LLM_API_KEY` to be
+set. The offline mode needs neither.
+
 **What does your eval test?**
 
 The evaluation measures more than whether the final action looks reasonable. It checks whether the action is permitted for the scenario, whether it falls into an explicitly harmful category, whether routine cases made unnecessary model calls, and whether an ambiguous case was reported with inappropriate confidence.
